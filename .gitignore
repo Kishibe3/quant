@@ -1,0 +1,14 @@
+__pycache__/
+.git/
+.github/
+
+raw data/
+data.db
+
+crawler/*
+!crawler/crawler
+crawler/crawler/*
+!crawler/crawler/settings.py
+!crawler/crawler/spiders
+crawler/crawler/spiders/*
+!crawler/crawler/spiders/scrapy_crawler.py
