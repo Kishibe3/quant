@@ -1,0 +1,28 @@
+name: Move scrapy related files to root directory
+
+on: 
+  push:
+    branches:
+      - main
+
+jobs:
+  move-scrapy-files:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+        
+      - name: Move scrapy related files to root directory
+        run: |
+          if [ -f "crawler/crawler/settings.py" ] || [ -f "crawler/crawler/spiders/scrapy_crawler.py" ]; then
+            mv "crawler/crawler/settings.py" . 2>/dev/null
+            mv "crawler/crawler/spiders/scrapy_crawler.py" . 2>/dev/null
+            rm -rf crawler
+            
+            git config --global user.name "Kishibe3"
+            git config --global user.email "ob4106702@gmail.com"
+            git add .
+            git commit -m "Move scrapy related files to root directory"
+            git push origin main
+          fi
