@@ -36,15 +36,20 @@ class FinstatSpider(scrapy.Spider):
         for sk in self.stock:
             if not os.path.exists(f'../raw data/financial statements/{sk}'):
                 os.makedirs(f'../raw data/financial statements/{sk}')
-            yield scrapy.Request(url = f'https://mops.twse.com.tw/server-java/t164sb01?step=1&CO_ID={sk}&SYEAR={self.ey}&SSEASON={self.es}&REPORT_ID=C', callback = self.check_id, meta = {'stock': sk, 'year': self.ey, 'season': self.es, 'id': 'C'})
+            if not all(os.path.exists(f'../raw data/financial statements/{sk}/{y} {s}.html') for y in range(self.sy, self.ey + 1) for s in range([1, self.ss][y == self.sy], [5, self.es + 1][y == self.ey])):
+                yield scrapy.Request(url = f'https://mops.twse.com.tw/server-java/t164sb01?step=1&CO_ID={sk}&SYEAR={self.ey}&SSEASON={self.es}&REPORT_ID=C', callback = self.check_id, meta = {'stock': sk, 'year': self.ey, 'season': self.es, 'id': 'C'})
     
     # check REPORT_ID should be C or A
     def check_id(self, response):
-        if b'Overrun' in response.body or b'SECURITY' in response.body:
+        if b'Too many query' in response.body or b'FOR SECURITY REASONS' in response.body:
             url = f'https://mops.twse.com.tw/server-java/t164sb01?step=1&CO_ID={response.meta['stock']}&SYEAR={self.ey}&SSEASON={self.es}&REPORT_ID=C'
             if time.time() > self.ignore_overrun_until:
-                self.log(f'Pause 20s. for {'overrun' if b'Overrun' in response.body else 'security'}. {url}')
-                time.sleep(20)
+                if b'Too many query' in response.body:
+                    self.log(f'Pause 20s. for overrun. {url}')
+                    time.sleep(20)
+                elif b'FOR SECURITY REASONS' in response.body:
+                    self.log(f'Pause 60s. for security. {url}')
+                    time.sleep(60)
                 self.ignore_overrun_until = time.time() + 10
             yield get_retry_request(response.request, spider = self, reason = 'Overrun' if b'Overrun' in response.body else 'Security')
         else:
@@ -65,11 +70,15 @@ class FinstatSpider(scrapy.Spider):
     # retry overrun cases
     def retry_overrun(self, response):
         sk, y, s, id = response.meta['stock'], response.meta['year'], response.meta['season'], response.meta['id']
-        if b'Overrun' in response.body or b'SECURITY' in response.body:
+        if b'Too many query' in response.body or b'FOR SECURITY REASONS' in response.body:
             url = f'https://mops.twse.com.tw/server-java/t164sb01?step=1&CO_ID={sk}&SYEAR={y}&SSEASON={s}&REPORT_ID={id}'
             if time.time() > self.ignore_overrun_until:
-                self.log(f'Pause 20s. for {'overrun' if b'Overrun' in response.body else 'security'}. {url}')
-                time.sleep(20)
+                if b'Too many query' in response.body:
+                    self.log(f'Pause 20s. for overrun. {url}')
+                    time.sleep(20)
+                elif b'FOR SECURITY REASONS' in response.body:
+                    self.log(f'Pause 60s. for security. {url}')
+                    time.sleep(60)
                 self.ignore_overrun_until = time.time() + 10
             yield get_retry_request(response.request, spider = self, reason = 'Overrun' if b'Overrun' in response.body else 'Security')
         else:

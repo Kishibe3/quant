@@ -3,6 +3,7 @@ import os
 import json
 import sqlite3
 import pandas as pd
+from datetime import datetime
 from bs4 import BeautifulSoup
 
 def cleasing_stock_basic():
@@ -17,13 +18,13 @@ def cleasing_stock_basic():
     db.close()
 
 
-def alter_table_column(table_name, new_code):
+def alter_table_column(table_name, new_code):  # 如果有新掛牌股票，會為新掛牌股票在資料庫過去日期的資料補上None值
     db = sqlite3.connect('data.db')
     cur = db.cursor()
     old_code = [c[1] for c in cur.execute('pragma table_info(' + table_name + ')').fetchall()]
-    cur.execute('create table new_' + table_name + '(日期, "' + '", "'.join(new_code) + '")')
+    cur.execute('create table new_' + table_name + '(時間, "' + '", "'.join(new_code) + '")')
     insec = list(set(old_code) & set(new_code))
-    cur.execute('insert into new_' + table_name + '(日期, "' + '", "'.join(insec) + '") select 日期, "' + '", "'.join(insec) + '" from ' + table_name)
+    cur.execute('insert into new_' + table_name + '(時間, "' + '", "'.join(insec) + '") select 時間, "' + '", "'.join(insec) + '" from ' + table_name)
     cur.execute('drop table ' + table_name)
     cur.execute('alter table new_' + table_name + ' rename to ' + table_name)
     db.commit()
@@ -36,7 +37,7 @@ def cleasing_stock_trading_info():
     db = sqlite3.connect('data.db')
     cur = db.cursor()
     stock_code = pd.read_csv('raw data/stock basic.csv', dtype = {'代號': str})['代號'].to_list()
-    if cur.execute('select name from sqlite_master where type="table" and name="開盤價"').fetchone():
+    if cur.execute('select name from sqlite_master where type = "table" and name = "開盤價"').fetchone():
         old_code = [c[1] for c in cur.execute('pragma table_info(開盤價)').fetchall()]
         if len(set(stock_code) - set(old_code)) > 0 or len(set(old_code) - set(stock_code)) > 0:  # 有新掛牌股票或下市股票，需要調整資料庫欄位
             alter_table_column('開盤價', stock_code)
@@ -47,21 +48,26 @@ def cleasing_stock_trading_info():
             alter_table_column('成交值', stock_code)
             alter_table_column('成交筆數', stock_code)
     else:
-        cur.execute('create table 開盤價(日期, "' + '", "'.join(stock_code) + '")')
-        cur.execute('create table 最高價(日期, "' + '", "'.join(stock_code) + '")')
-        cur.execute('create table 最低價(日期, "' + '", "'.join(stock_code) + '")')
-        cur.execute('create table 收盤價(日期, "' + '", "'.join(stock_code) + '")')
-        cur.execute('create table 成交量(日期, "' + '", "'.join(stock_code) + '")')
-        cur.execute('create table 成交值(日期, "' + '", "'.join(stock_code) + '")')
-        cur.execute('create table 成交筆數(日期, "' + '", "'.join(stock_code) + '")')
+        cur.execute('create table 開盤價(時間, "' + '", "'.join(stock_code) + '")')
+        cur.execute('create table 最高價(時間, "' + '", "'.join(stock_code) + '")')
+        cur.execute('create table 最低價(時間, "' + '", "'.join(stock_code) + '")')
+        cur.execute('create table 收盤價(時間, "' + '", "'.join(stock_code) + '")')
+        cur.execute('create table 成交量(時間, "' + '", "'.join(stock_code) + '")')
+        cur.execute('create table 成交值(時間, "' + '", "'.join(stock_code) + '")')
+        cur.execute('create table 成交筆數(時間, "' + '", "'.join(stock_code) + '")')
         db.commit()
 
     def read_file(file):
         f1 = open(f'raw data/stock trading info/twse/{file}', 'r')
         f2 = open(f'raw data/stock trading info/tpex/{file}', 'r')
         r = [[file.replace('.json', '').replace(' ', '/'), sk, '--', '--', '--', '--', '0', '0', '0'] for sk in stock_code]
-        dt = {it[0]: it[1:] for it in [r[:1] + r[5:9] + [r[2], r[4], r[3]] for r in json.load(f1)['data9'] if r[0] in stock_code] + \
-         [r[:1] + r[4:7] + [r[2]] + r[7:10] for r in json.load(f2)['tables'][0]['data'] if r[0] in stock_code]}
+        try:
+            dt = {it[0]: it[1:] for it in [r[:1] + r[5:9] + [r[2], r[4], r[3]] for r in json.load(f1)['tables'][8]['data'] if r[0] in stock_code] + \
+            [r[:1] + r[4:7] + [r[2]] + r[7:10] for r in json.load(f2)['tables'][0]['data'] if r[0] in stock_code]}
+        except Exception as e:
+            print(e)
+            print(file)
+            exit()
         f1.close()
         f2.close()
         for i, sk in enumerate(stock_code):
@@ -70,17 +76,17 @@ def cleasing_stock_trading_info():
                 r[i][2:] = it
         return r
     
-    files = list(set(fn for fn in os.listdir('raw data/stock trading info/twse') if os.path.isfile(f'raw data/stock trading info/twse/{fn}') and os.path.isfile(f'raw data/stock trading info/tpex/{fn}')) - set(it[0].replace('/', ' ') + '.json' for it in cur.execute('select 日期 from 開盤價').fetchall()))
+    files = sorted(list(set(fn for fn in os.listdir('raw data/stock trading info/twse') if os.path.isfile(f'raw data/stock trading info/twse/{fn}') and os.path.isfile(f'raw data/stock trading info/tpex/{fn}')) - set(it[0].replace('/', ' ') + '.json' for it in cur.execute('select 時間 from 開盤價').fetchall())))
     if len(files) > 0:
-        dfs = [pd.DataFrame(sum(map(read_file, files[i : i + 365]), []), columns = ['日期', '代號', '開盤價', '最高價', '最低價', '收盤價', '成交量', '成交值', '成交筆數']) for i in range(0, len(files), 365)]
+        dfs = [pd.DataFrame(sum(map(read_file, files[i : i + 365]), []), columns = ['時間', '代號', '開盤價', '最高價', '最低價', '收盤價', '成交量', '成交值', '成交筆數']) for i in range(0, len(files), 365)]
         for df in dfs:
-            cur.executemany('insert into 開盤價 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '開盤價', index = '日期', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
-            cur.executemany('insert into 最高價 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '最高價', index = '日期', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
-            cur.executemany('insert into 最低價 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '最低價', index = '日期', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
-            cur.executemany('insert into 收盤價 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '收盤價', index = '日期', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
-            cur.executemany('insert into 成交量 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '成交量', index = '日期', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
-            cur.executemany('insert into 成交值 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '成交值', index = '日期', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
-            cur.executemany('insert into 成交筆數 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '成交筆數', index = '日期', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
+            cur.executemany('insert into 開盤價 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '開盤價', index = '時間', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
+            cur.executemany('insert into 最高價 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '最高價', index = '時間', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
+            cur.executemany('insert into 最低價 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '最低價', index = '時間', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
+            cur.executemany('insert into 收盤價 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '收盤價', index = '時間', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
+            cur.executemany('insert into 成交量 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '成交量', index = '時間', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
+            cur.executemany('insert into 成交值 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '成交值', index = '時間', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
+            cur.executemany('insert into 成交筆數 values(?' + (', ?' * len(stock_code)) + ')', pd.pivot_table(df, values = '成交筆數', index = '時間', columns = '代號', aggfunc = lambda x: 'NaN' if '-' in x.iloc[0] else float(x.iloc[0].replace(',', ''))).reset_index().replace('NaN', None).values.tolist())
             db.commit()
     db.close()
 
@@ -118,18 +124,12 @@ def cleasing_financial_statements():
         return rt
     # 糾正各報表中對不起來的項目與錯誤字元：
     # 資產負債表
-    # 當期所得稅負債 -> 本期所得稅負債
-    # 負債準備-流動 -> 負債準備－流動
-    # 淨確定福利負債-非流動 -> 淨確定福利負債－非流動
+    # 當期所得稅負債 -> 本期所得稅負債   BUG? 以前的資料可能有 當期所得稅負債－非流動 的可能嗎?
     # \u3000預收股款（權益項下）之約當發行股數 -> 預收股款（權益項下）之約當發行股數
     # \u3000母公司暨子公司所持有之母公司庫藏股股數（單位：股） -> 母公司暨子公司所持有之母公司庫藏股股數（單位：股）
     #
     # 損益表
-    # 營業毛利（毛損）淨額 -> \u3000營業毛利（毛損）淨額
-    # 預期信用減損損失(利益) -> 預期信用減損損失（利益）
-    # 其他綜合損益(淨額) -> 其他綜合損益（淨額）
-    # 採用權益法認列之關聯企業及合資之其他綜合損益之份額-不重分類至損益之項目 -> 採用權益法認列之關聯企業及合資之其他綜合損益之份額－不重分類至損益之項目
-    # 採用權益法認列之關聯企業及合資之其他綜合損益之份額-可能重分類至損益之項目 -> 採用權益法認列之關聯企業及合資之其他綜合損益之份額－可能重分類至損益之項目
+    # 營業毛利（毛損）、營業毛利（毛損）淨額 此2項之間的所有項目都增加\u3000的前綴，成為 營業毛利（毛損） 的子節點
     # 此2項的科目成為其子科目的前綴
     #   淨利（損）歸屬於：
     #   綜合損益總額歸屬於：
@@ -139,27 +139,30 @@ def cleasing_financial_statements():
     # 不影響現金流量之收益費損項目 -> 收益費損項目
     # 呆帳費用提列（轉列收入）數 -> 預期信用減損損失（利益）數／呆帳費用提列（轉列收入）數
     # 與營業活動相關之資產／負債變動數 -> 與營業活動相關之資產及負債之淨變動
-    # 淨確定福利負債增加(減少) -> 淨確定福利負債增加（減少）
     # 營業活動之淨現金流入（流出） -> \u3000營業活動之淨現金流入（流出）
+
+    # BUG? 2801/2024 3.html的綜合損益表中的許多項目都是NaN 金控可能有不同會計處理方式？
+    # BUG? 綜合損益表中的 員工訓練費用 研究發展費用 該擺在 營業費用 下還是 營業費用/其他業務及管理費用 下？
     def org(fn):
-        with open(fn, 'r', encoding = 'cp950') as f:
+        if not os.path.exists(fn):
+            return [[], [], []]
+        with open(fn, 'r', encoding = 'cp950', errors = 'replace') as f:
             cnt = f.read()
-            year = fn.split('/')[-1].split()[0]
+        if '查無資料' in cnt or '檔案不存在' in cnt:
+            return [[], [], []]
         cnt = cnt.replace('當期所得稅負債', '本期所得稅負債')\
-            .replace('負債準備-流動', '負債準備－流動')\
-            .replace('淨確定福利負債-非流動', '淨確定福利負債－非流動')\
             .replace('\u3000預收股款（權益項下）之約當發行股數', '預收股款（權益項下）之約當發行股數')\
             .replace('\u3000母公司暨子公司所持有之母公司庫藏股股數（單位：股）', '母公司暨子公司所持有之母公司庫藏股股數（單位：股）')\
-            .replace('預期信用減損損失(利益)', '預期信用減損損失（利益）')\
-            .replace('其他綜合損益(淨額)', '其他綜合損益（淨額）')\
-            .replace('採用權益法認列之關聯企業及合資之其他綜合損益之份額-不重分類至損益之項目', '採用權益法認列之關聯企業及合資之其他綜合損益之份額－不重分類至損益之項目')\
-            .replace('採用權益法認列之關聯企業及合資之其他綜合損益之份額-可能重分類至損益之項目', '採用權益法認列之關聯企業及合資之其他綜合損益之份額－可能重分類至損益之項目')\
             .replace('營業活動之現金流量－間接法', '營業活動之現金流量')\
             .replace('不影響現金流量之收益費損項目', '收益費損項目')\
             .replace('與營業活動相關之資產／負債變動數', '與營業活動相關之資產及負債之淨變動')\
-            .replace('淨確定福利負債增加(減少)', '淨確定福利負債增加（減少）')\
             .replace('營業活動之淨現金流入（流出）', '\u3000營業活動之淨現金流入（流出）')
-        cnt = re.sub(r'(?<!／)呆帳費用提列（轉列收入）數', '預期信用減損損失（利益）數／呆帳費用提列（轉列收入）數', cnt)
+        cnt = re.sub('(?<!／)呆帳費用提列（轉列收入）數', '預期信用減損損失（利益）數／呆帳費用提列（轉列收入）數', cnt)
+        cnt = re.sub(r'\((?=[\u4e00-\u9fff])', '（', cnt)
+        cnt = re.sub(r'(?<=[\u4e00-\u9fff])\)', '）', cnt)
+        cnt = re.sub(r'(?<=[\u4e00-\u9fff])-(?=[\u4e00-\u9fff])', '－', cnt)
+
+        year = fn.split('/')[-1].split()[0]
         if int(year) >= 2019:
             tbs = BeautifulSoup(cnt, 'html.parser').select('table')[:3]
             for tb in tbs:
@@ -178,19 +181,22 @@ def cleasing_financial_statements():
                 [['\u3000' + it[0], it[1]] for it in lt[0][s.index('負債'):s.index('權益總額') + 1]] + \
                 [['\u3000負債及權益總計', lt[0][s.index('資產總額')][1]]] + lt[0][s.index('權益總額') + 1:]
         s = list(map(lambda x: x.replace('\u3000', ''), list(zip(*lt[1]))[0]))
-        lt[1][s.index('營業毛利（毛損）')][1] = ''
-        lt[1][s.index('營業毛利（毛損）淨額')][0] = '\u3000營業毛利（毛損）淨額'
-        lt[1] = lt[1][:s.index('淨利（損）歸屬於：')] + \
-            [['淨利（損）歸屬於：' + it[0].replace('\u3000', ''), it[1]] for it in lt[1][s.index('淨利（損）歸屬於：') + 1:s.index('綜合損益總額歸屬於：')]] + \
-            [['綜合損益總額歸屬於：' + it[0].replace('\u3000', ''), it[1]] for it in lt[1][s.index('綜合損益總額歸屬於：') + 1:s.index('基本每股盈餘')]] + \
-            lt[1][s.index('基本每股盈餘'):]
+        if '淨利（損）歸屬於：' in s:
+            lt[1] = lt[1][:s.index('淨利（損）歸屬於：')] + \
+                [['淨利（損）歸屬於：' + it[0].replace('\u3000', ''), it[1]] for it in lt[1][s.index('淨利（損）歸屬於：') + 1:s.index('綜合損益總額歸屬於：')]] + \
+                [['綜合損益總額歸屬於：' + it[0].replace('\u3000', ''), it[1]] for it in lt[1][s.index('綜合損益總額歸屬於：') + 1:s.index('基本每股盈餘')]] + \
+                lt[1][s.index('基本每股盈餘'):]
+        if '營業毛利（毛損）' in s:  # 1409/2024 3.html沒有此項
+            for i in range(s.index('營業毛利（毛損）'), s.index('營業毛利（毛損）淨額') + 1):
+                lt[1][i][0] = '\u3000' + lt[1][i][0]
+            lt[1] = lt[1][:s.index('營業毛利（毛損）')] + [['營業毛利（毛損）', '']] + lt[1][s.index('營業毛利（毛損）'):]
         rt = list(map(pru, lt))
         for its in rt:
             for it in its:
                 if any(c in it[0] for c in ['-', '(', ')', '/']):
-                    raise Exception(f'不允許的字元出現：{it[0]}')
+                    raise Exception(f'不允許的字元出現：{it[0]} 在 {fn}')
         return rt
-    def mrg(its, te = None):
+    def mrg(its, te = None):  # 整合多個財報成同一棵樹
         if te is None:
             te = {'c': 0}
         sk = []
@@ -211,42 +217,67 @@ def cleasing_financial_statements():
         return te
 
     stock_code = pd.read_csv('raw data/stock basic.csv', dtype = {'代號': str})['代號'].to_list()
-
-
-
+    db = sqlite3.connect('data.db')
+    cur = db.cursor()
+    if cur.execute('select name from sqlite_master where type = "table" and name = "資產負債表/資產"').fetchone():
+        if cur.execute('select 時間 from "資產負債表/資產"').fetchone():
+            sy, ss = map(int, cur.execute('select 時間 from "資產負債表/資產"').fetchall()[-1][0].split('/Q'))
+            ss += 1
+            if ss == 5:
+                sy, ss = sy + 1, 1
+        else:
+            sy, ss, _ = map(int, '2013/01/01'.split('/'))
+            ss = (ss + 2) // 3
+        old_code = [c[1] for c in cur.execute('pragma table_info("資產負債表/資產")').fetchall()]
+        if len(set(stock_code) - set(old_code)) > 0 or len(set(old_code) - set(stock_code)) > 0:  # 有新掛牌股票或下市股票，需要調整資料庫欄位
+            for tb in cur.execute('select name from sqlite_master where type = "table"'):
+                alter_table_column(tb[0], stock_code)
+    else:
+        sy, ss, _ = map(int, '2013/01/01'.split('/'))
+        ss = (ss + 2) // 3
+    ey, es = datetime.now().year, datetime.today().strftime('%m/%d')
+    if es < '03/31':
+        ey, es = ey - 1, 3
+    elif es < '05/15':
+        ey, es = ey - 1, 4
+    elif es < '08/14':
+        es = 1
+    elif es < '11/14':
+        es = 2
+    else:
+        es = 3
+    seasons = [f'{y}/Q{s}' for y in range(sy, ey + 1) for s in range([1, ss][y == sy], [5, es + 1][y == ey])]
+    for c in stock_code:
+        te = [None] * 3
+        for y in range(sy, ey + 1):
+            for s in range([1, ss][y == sy], [5, es + 1][y == ey]):
+                its = org(f'raw data/financial statements/{c}/{y} {s}.html')
+                te = [mrg(its[i], te[i]) for i in range(3)]
+        for i in range(3):
+            sk, p = [[]], None
+            while len(sk) > 0:
+                ph, p = sk.pop(), te[i]
+                for k in ph:
+                    p = p[k]
+                if 'v' in p:
+                    if len(p['v']) < te[i]['c']:
+                        p['v'] += ['NaN'] * (te[i]['c'] - len(p['v']))
+                    tb = '/'.join([['資產負債表', '綜合損益表', '現金流量表'][i]] + ph)
+                    if cur.execute('select name from sqlite_master where type="table" and name="' + tb + '"').fetchone() is None:
+                        cur.execute('create table "' + tb + '"(時間, "' + '", "'.join(stock_code) + '")')
+                        cur.executemany('insert into "' + tb + '"(時間) values(?)', [[f'{y}/Q{s}'] for y in range(2013, ey + 1) for s in range(1, [5, es + 1][y == ey])])
+                    cur.executemany('update "' + tb + '" set "' + c + '" = ? where 時間 = ?', list(zip(p['v'], seasons)))
+                for k in p:
+                    if k != 'v' and k != 'c':
+                        sk.append(ph + [k])
+        db.commit()
+    db.close()
 
 
 """
-its = [['資產', ''], ['\u3000遞延所得稅資產', '5,393'], ['\u3000其他非流動資產', '2,646'], ['\u3000\u3000預付設備款', '0'], ['\u3000\u3000存出保證金', '2,646'], ['\u3000資產總計', '8,039']]
-its = [['應收帳款－關係人淨額', ''], ['\u3000應收帳款－關係人', '2,601'], ['\u3000應收帳款－關係人淨額', '2,601']]
-its = [['應收票據淨額', ''], ['\u3000應收票據', '102,773'], ['\u3000備抵呆帳－應收票據', '3,074'], ['\u3000應收票據淨額', '99,699']]
-its = [['資產', '8,039'], ['\u3000遞延所得稅資產', '5,393'], ['\u3000其他非流動資產', '2,646']]
-its = [['資產', ''], ['\u3000遞延所得稅資產', '5,393'], ['\u3000其他非流動資產', ''], ['\u3000\u3000預付設備款', '0'], ['\u3000\u3000存出保證金', '2,646'], ['\u3000\u3000其他非流動資產總計', '2,646'], ['\u3000資產總計', '8,039']]
-
----
-
-import os
-from cleasing import organize
-def stpt(l, s = 1):
-    if not True in map(lambda x: isinstance(x, list), l):
-        print(l, end = '')
-        return
-    print('[', end = '')
-    for i, il in enumerate(l):
-        stpt(il, s + 1)
-        if i != len(l) - 1:
-            print(',\n' + (' ' * s), end = '')
-    print([']', ']\n'][s == 1], end = '')
-
-code = '2330'
-[organize(f'raw data/financial statements/{code}/{fn}') for fn in os.listdir(f'raw data/financial statements/{code}') if os.path.isfile(f'raw data/financial statements/{code}/{fn}')]
-stpt(organize('raw data/financial statements/3167/2024 3.html'))
-
----
-
-from bs4 import BeautifulSoup
-import re, os, pandas as pd, sqlite3
+import sqlite3, os, re, time, pandas as pd
 from datetime import datetime
+from bs4 import BeautifulSoup
 def rp(a):
     return a.replace('合計', '').replace('淨額', '').replace('總計', '').replace('總額', '').replace('淨現金流入（流出）', '現金流量').replace('\u3000', '')
 
@@ -278,24 +309,24 @@ def pru(its):  # 簡化報表的項目
     return rt
 
 def org(fn):
-    with open(fn, 'r', encoding = 'cp950') as f:
+    if not os.path.exists(fn):
+        return [[], [], []]
+    with open(fn, 'r', encoding = 'cp950', errors = 'replace') as f:
         cnt = f.read()
-        year = fn.split('/')[-1].split()[0]
+    if '查無資料' in cnt or '檔案不存在' in cnt:
+        return [[], [], []]
     cnt = cnt.replace('當期所得稅負債', '本期所得稅負債')\
-        .replace('負債準備-流動', '負債準備－流動')\
-        .replace('淨確定福利負債-非流動', '淨確定福利負債－非流動')\
         .replace('\u3000預收股款（權益項下）之約當發行股數', '預收股款（權益項下）之約當發行股數')\
         .replace('\u3000母公司暨子公司所持有之母公司庫藏股股數（單位：股）', '母公司暨子公司所持有之母公司庫藏股股數（單位：股）')\
-        .replace('預期信用減損損失(利益)', '預期信用減損損失（利益）')\
-        .replace('其他綜合損益(淨額)', '其他綜合損益（淨額）')\
-        .replace('採用權益法認列之關聯企業及合資之其他綜合損益之份額-不重分類至損益之項目', '採用權益法認列之關聯企業及合資之其他綜合損益之份額－不重分類至損益之項目')\
-        .replace('採用權益法認列之關聯企業及合資之其他綜合損益之份額-可能重分類至損益之項目', '採用權益法認列之關聯企業及合資之其他綜合損益之份額－可能重分類至損益之項目')\
         .replace('營業活動之現金流量－間接法', '營業活動之現金流量')\
         .replace('不影響現金流量之收益費損項目', '收益費損項目')\
         .replace('與營業活動相關之資產／負債變動數', '與營業活動相關之資產及負債之淨變動')\
-        .replace('淨確定福利負債增加(減少)', '淨確定福利負債增加（減少）')\
         .replace('營業活動之淨現金流入（流出）', '\u3000營業活動之淨現金流入（流出）')
-    cnt = re.sub(r'(?<!／)呆帳費用提列（轉列收入）數', '預期信用減損損失（利益）數／呆帳費用提列（轉列收入）數', cnt)
+    cnt = re.sub('(?<!／)呆帳費用提列（轉列收入）數', '預期信用減損損失（利益）數／呆帳費用提列（轉列收入）數', cnt)
+    cnt = re.sub(r'\((?=[\u4e00-\u9fff])', '（', cnt)
+    cnt = re.sub(r'(?<=[\u4e00-\u9fff])\)', '）', cnt)
+    cnt = re.sub(r'(?<=[\u4e00-\u9fff])-(?=[\u4e00-\u9fff])', '－', cnt)
+    year = fn.split('/')[-1].split()[0]
     if int(year) >= 2019:
         tbs = BeautifulSoup(cnt, 'html.parser').select('table')[:3]
         for tb in tbs:
@@ -314,20 +345,23 @@ def org(fn):
             [['\u3000' + it[0], it[1]] for it in lt[0][s.index('負債'):s.index('權益總額') + 1]] + \
             [['\u3000負債及權益總計', lt[0][s.index('資產總額')][1]]] + lt[0][s.index('權益總額') + 1:]
     s = list(map(lambda x: x.replace('\u3000', ''), list(zip(*lt[1]))[0]))
-    lt[1][s.index('營業毛利（毛損）')][1] = ''
-    lt[1][s.index('營業毛利（毛損）淨額')][0] = '\u3000營業毛利（毛損）淨額'
-    lt[1] = lt[1][:s.index('淨利（損）歸屬於：')] + \
-        [['淨利（損）歸屬於：' + it[0].replace('\u3000', ''), it[1]] for it in lt[1][s.index('淨利（損）歸屬於：') + 1:s.index('綜合損益總額歸屬於：')]] + \
-        [['綜合損益總額歸屬於：' + it[0].replace('\u3000', ''), it[1]] for it in lt[1][s.index('綜合損益總額歸屬於：') + 1:s.index('基本每股盈餘')]] + \
-        lt[1][s.index('基本每股盈餘'):]
+    if '淨利（損）歸屬於：' in s:
+        lt[1] = lt[1][:s.index('淨利（損）歸屬於：')] + \
+            [['淨利（損）歸屬於：' + it[0].replace('\u3000', ''), it[1]] for it in lt[1][s.index('淨利（損）歸屬於：') + 1:s.index('綜合損益總額歸屬於：')]] + \
+            [['綜合損益總額歸屬於：' + it[0].replace('\u3000', ''), it[1]] for it in lt[1][s.index('綜合損益總額歸屬於：') + 1:s.index('基本每股盈餘')]] + \
+            lt[1][s.index('基本每股盈餘'):]
+    if '營業毛利（毛損）' in s:
+        for i in range(s.index('營業毛利（毛損）'), s.index('營業毛利（毛損）淨額') + 1):
+            lt[1][i][0] = '\u3000' + lt[1][i][0]
+        lt[1] = lt[1][:s.index('營業毛利（毛損）')] + [['營業毛利（毛損）', '']] + lt[1][s.index('營業毛利（毛損）'):]
     rt = list(map(pru, lt))
     for its in rt:
         for it in its:
             if any(c in it[0] for c in ['-', '(', ')', '/']):
-                raise Exception(f'不允許的字元出現：{it[0]}')
+                raise Exception(f'不允許的字元出現：{it[0]} 在 {fn}')
     return rt
 
-def mrg(its, te = None):
+def mrg(its, te = None):  # 整合多個財報成同一棵樹
     if te is None:
         te = {'c': 0}
     sk = []
@@ -355,39 +389,6 @@ def ptt(te, s = 0):
         if len(te[k]) > 1:
             ptt(te[k], s + 1)
 
-stock_code = pd.read_csv('raw data/stock basic.csv', dtype = {'代號': str})['代號'].to_list()
-code = sorted([c for c in os.listdir('raw data/financial statements') if os.path.isdir(f'raw data/financial statements/{c}') and c in stock_code])
-te = [None] * 3
-for c in code:
-    its = org(f'raw data/financial statements/{c}/2024 2.html')
-    te = [mrg(its[i], te[i]) for i in range(3)]
-
-print(code)
-db = sqlite3.connect('test.db')
-cur = db.cursor()
-for i in range(3):
-    sk, p = [[]], None
-    while len(sk) > 0:
-        ph, p = sk.pop(), te[i]
-        for k in ph:
-            p = p[k]
-        if len(p) == 1 and 'v' in p:
-            if len(p['v']) < te[i]['c']:
-                p['v'] += ['NaN'] * (te[i]['c'] - len(p['v']))
-            tb = '/'.join([['資產負債表', '綜合損益表', '現金流量表'][i]] + ph)
-            if cur.execute('select name from sqlite_master where type="table" and name="' + tb + '"').fetchone() is None:
-                cur.execute('create table "' + tb + '"(日期, "' + '", "'.join(code) + '")')
-            cur.execute('insert into "' + tb + '" values(? ' + (', ?' * len(code)) + ')', ['2024/2'] + p['v'])
-        for k in p:
-            if k != 'v' and k != 'c':
-                sk.append(ph + [k])
-    ptt(te[i])
-    print('---')
-db.commit()
-db.close()
-
-
-
 sy, ss, _ = map(int, '2013/01/01'.split('/'))
 ss = (ss + 2) // 3
 ey, es = datetime.now().year, datetime.today().strftime('%m/%d')
@@ -404,31 +405,67 @@ else:
 
 db = sqlite3.connect('test.db')
 cur = db.cursor()
+stock_code = pd.read_csv('raw data/stock basic.csv', dtype = {'代號': str})['代號'].to_list()
+c = '2330'
+te = [None] * 3
 for y in range(sy, ey + 1):
     for s in range([1, ss][y == sy], [5, es + 1][y == ey]):
-        te = [None] * 3
-        for c in code:
-            its = org(f'raw data/financial statements/{c}/{y} {s}.html')
-            te = [mrg(its[i], te[i]) for i in range(3)]
-        for i in range(3):
-            sk, p = [[]], None
-            while len(sk) > 0:
-                ph, p = sk.pop(), te[i]
-                for k in ph:
-                    p = p[k]
-                if len(p) == 1 and 'v' in p:
-                    if len(p['v']) < te[i]['c']:
-                        p['v'] += ['NaN'] * (te[i]['c'] - len(p['v']))
-                    tb = '/'.join([['資產負債表', '綜合損益表', '現金流量表'][i]] + ph)
-                    if cur.execute('select name from sqlite_master where type="table" and name="' + tb + '"').fetchone() is None:
-                        cur.execute('create table "' + tb + '"(日期, "' + '", "'.join(code) + '")')
-                    cur.execute('insert into "' + tb + '" values(? ' + (', ?' * len(code)) + ')', [f'{y}/{s}'] + p['v'])
-                for k in p:
-                    if k != 'v' and k != 'c':
-                        sk.append(ph + [k])
-            db.commit()
+        its = org(f'raw data/financial statements/{c}/{y} {s}.html')
+        te = [mrg(its[i], te[i]) for i in range(3)]
 
+seasons = [f'{y}/Q{s}' for y in range(sy, ey + 1) for s in range([1, ss][y == sy], [5, es + 1][y == ey])]
+for i in range(3):
+    sk, p = [[]], None
+    while len(sk) > 0:
+        ph, p = sk.pop(), te[i]
+        for k in ph:
+            p = p[k]
+        if 'v' in p:
+            if len(p['v']) < te[i]['c']:
+                p['v'] += ['NaN'] * (te[i]['c'] - len(p['v']))
+            tb = '/'.join([['資產負債表', '綜合損益表', '現金流量表'][i]] + ph)
+            if cur.execute('select name from sqlite_master where type="table" and name="' + tb + '"').fetchone() is None:
+                cur.execute('create table "' + tb + '"(時間, "' + '", "'.join(stock_code) + '")')
+                cur.executemany('insert into "' + tb + '"(時間) values(?)', [[s] for s in seasons])
+            cur.executemany('update "' + tb + '" set "' + c + '" = ? where 時間 = ?', list(zip(p['v'], seasons)))
+        for k in p:
+            if k != 'v' and k != 'c':
+                sk.append(ph + [k])
+    ptt(te[i])
+    print('---')
+
+db.commit()
+pd.read_sql('select * from "資產負債表/資產"', db)
 db.close()
+
+---
+
+its = [['資產', ''], ['\u3000遞延所得稅資產', '5,393'], ['\u3000其他非流動資產', '2,646'], ['\u3000\u3000預付設備款', '0'], ['\u3000\u3000存出保證金', '2,646'], ['\u3000資產總計', '8,039']]
+its = [['應收帳款－關係人淨額', ''], ['\u3000應收帳款－關係人', '2,601'], ['\u3000應收帳款－關係人淨額', '2,601']]
+its = [['應收票據淨額', ''], ['\u3000應收票據', '102,773'], ['\u3000備抵呆帳－應收票據', '3,074'], ['\u3000應收票據淨額', '99,699']]
+its = [['資產', '8,039'], ['\u3000遞延所得稅資產', '5,393'], ['\u3000其他非流動資產', '2,646']]
+its = [['資產', ''], ['\u3000遞延所得稅資產', '5,393'], ['\u3000其他非流動資產', ''], ['\u3000\u3000預付設備款', '0'], ['\u3000\u3000存出保證金', '2,646'], ['\u3000\u3000其他非流動資產總計', '2,646'], ['\u3000資產總計', '8,039']]
+
+def stpt(l, s = 1):
+    if not True in map(lambda x: isinstance(x, list), l):
+        print(l, end = '')
+        return
+    print('[', end = '')
+    for i, il in enumerate(l):
+        stpt(il, s + 1)
+        if i != len(l) - 1:
+            print(',\n' + (' ' * s), end = '')
+    print([']', ']\n'][s == 1], end = '')
+
+def ptt(te, s = 0):
+    for k in te:
+        if k == 'v' or k == 'c':
+            continue
+        print(('  ' * s) + k + ': ' + str(te[k]['v']))
+        if len(te[k]) > 1:
+            ptt(te[k], s + 1)
+
+pd.set_option('display.max_columns', None)
 
 ---
 
@@ -458,63 +495,4 @@ def pru(its):
         return [[its[f][0], n]] + r, p + 1
     return sk()
 
-def mrg(its, te = None):
-    if te is None:
-        te = {'c': 0}
-    sk = []
-    for i in range(len(its)):
-        while len(sk) > its[i][0].count('\u3000'):
-            sk.pop()
-        if len(sk) < its[i][0].count('\u3000'):
-            sk.append(its[i - 1][0].lstrip('\u3000'))
-        p = te
-        for k in sk:
-            p = p[k]
-        n = its[i][0].lstrip('\u3000')
-        if n in p:
-            p[n]['v'] += ['NaN'] * (te['c'] - len(p[n]['v'])) + [its[i][1]]
-        else:
-            p[n] = {'v': ['NaN'] * te['c'] + [its[i][1]]}
-    te['c'] += 1
-    return te
-
-def impute(te , c = None):
-    if c is None:
-        c = te['c']
-    if len(te) == 1 and 'v' in te:
-        if len(te['v']) < c:
-            te['v'] += ['NaN'] * (c - len(te['v']))
-        return
-    for k in te:
-        if k != 'c' and k != 'v':
-            impute(te[k], c)
-
-def ptt(te, s = 0):
-    for k in te:
-        if k == 'v' or k == 'c':
-            continue
-        print(('  ' * s) + k + ': ' + str(te[k]['v']))
-        if len(te[k]) > 1:
-            ptt(te[k], s + 1)
-
-te = [None] * 3
-fs = ['2024 1.html', '2024 2.html', '2024 3.html']
-for fn in fs:
-    its = org(f'raw data/financial statements/3167/{fn}')
-    te = [mrg(its[i], te[i]) for i in range(3)]
-
-for i in range(3):
-    impute(te[i])
-    ptt(te[i])
-    print('---')
-
----
-
-scrapy startproject crawler
-mv crawler.py crawler/crawler/spiders/scrapy_crawler.py
-mv crawler.py crawler/crawler/settings.py
-python crawler.py
-cd crawler
-scrapy crawl financialstatements
-scrapy crawl stocktradinginfo
 """
