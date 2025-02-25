@@ -75,6 +75,17 @@ def cleasing_stock_trading_info():
     db.close()
 
 
+def stpt(l, s = 1):
+    if True not in map(lambda x: isinstance(x, list), l):
+        print(l, end = '')
+        return
+    print('[', end = '')
+    for i, il in enumerate(l):
+        stpt(il, s + 1)
+        if i != len(l) - 1:
+            print(',\n' + (' ' * s), end = '')
+    print([']', ']\n'][s == 1], end = '')
+
 def cleasing_financial_statements():
     if not os.path.exists('raw data/financial statements') or not os.path.exists('raw data/stock basic.csv'):
         return
@@ -82,6 +93,8 @@ def cleasing_financial_statements():
     def rp(a):
         return a.replace('合計', '').replace('淨額', '').replace('總計', '').replace('總額', '').replace('淨現金流入（流出）', '現金流量').replace('\u3000', '')
     def nb(a):
+        if a == '':
+            return 'NaN'
         return (float(re.sub('[,\\(\\)]', '', a)) if '.' in a else int(re.sub('[,\\(\\)]', '', a))) * (1 - 2 * int('(' in a))
     def pru(its):  # 簡化報表的項目
         i = 0
@@ -133,6 +146,7 @@ def cleasing_financial_statements():
 
     # 糾正各報表中對不起來的項目與錯誤字元：
     # 資產負債表
+    # 無活絡市場之債券投資－非流動 -> 無活絡市場之債務工具投資－非流動
     # 當期所得稅負債 -> 本期所得稅負債   BUG? 以前的資料可能有 當期所得稅負債－非流動 的可能嗎?
     # \u3000待註銷股本股數 -> 待註銷股本股數
     # \u3000預收股款（權益項下）之約當發行股數 -> 預收股款（權益項下）之約當發行股數
@@ -164,7 +178,8 @@ def cleasing_financial_statements():
         elif '會計師查核' not in cnt:
             warnings.warn(f'File {fn} is not complete. Please download it again.')
             return [[], [], []], None
-        cnt = cnt.replace('當期所得稅負債', '本期所得稅負債')\
+        cnt = cnt.replace('無活絡市場之債券投資－非流動', '無活絡市場之債務工具投資－非流動')\
+            .replace('當期所得稅負債', '本期所得稅負債')\
             .replace('\u3000待註銷股本股數', '待註銷股本股數')\
             .replace('\u3000預收股款（權益項下）之約當發行股數', '預收股款（權益項下）之約當發行股數')\
             .replace('\u3000母公司暨子公司所持有之母公司庫藏股股數（單位：股）', '母公司暨子公司所持有之母公司庫藏股股數（單位：股）')\
@@ -210,7 +225,12 @@ def cleasing_financial_statements():
                 lt[2][s.index('營業活動之現金流量－直接法'):]
         else:
             lt[2][s.index('營業活動之淨現金流入（流出）')][0] = '\u3000營業活動之淨現金流入（流出）－間接法'
-        return list(map(pru, lt)), timespan
+        try:
+            rt = list(map(pru, lt))
+        except Exception:
+            print(fn)
+            exit()
+        return rt, timespan
 
     db = sqlite3.connect('data.db')
     cur = db.cursor()
@@ -242,10 +262,10 @@ def cleasing_financial_statements():
     else:
         es = 3
     
-    # 清理資料時間會很長，程式執行可能中止，為了能從中斷點繼續執行程式需要知道更早的開始年份與季節(sy, ss)還有中斷的股票代號(skip2code)
+    # 清理資料時間會很長，程式執行時可能意外中止，為了能從中斷點繼續執行程式需要知道更早的開始年份與季節(sy, ss)還有中斷的股票代號(skip2code)
     skip2code = ''
     if cur.execute('select name from sqlite_master where type = "table" and name = "現金流量表/期末現金及約當現金餘額/資產負債表帳列之現金及約當現金"').fetchone():
-        if cur.execute('select 時間 from "現金流量表/期末現金及約當現金餘額/資產負債表帳列之現金及約當現金"').fetchone():
+        if cur.execute('select 時間 from "現金流量表/期末現金及約當現金餘額/資產負債表帳列之現金及約當現金"').fetchone():  # 資產負債表帳列之現金及約當現金 是財報中的最後一個項目
             # 找尋要重新處理的資料的時間起始點
             ss = ''
             for c in stock_code[::-1]:
@@ -269,18 +289,18 @@ def cleasing_financial_statements():
                 """)]
                 if len(nv) == 0:
                     break
-                if ss != '' and nv[0] >= ss:
+                if ss != '' and nv[0] >= ss:  # 沒有比ss更早的缺失值了，無法再讓ss更早了
                     break
                 for s in nv:
                     if ss != '' and s >= ss:
                         break
                     with open(f'raw data/financial statements/{c}/{s.replace('/Q', ' ')}.html', 'r', encoding = 'cp950', errors = 'replace') as f:
                         cnt = f.read()
-                    if "資產負債表帳列之現金及約當現金" in cnt:
+                    if "資產負債表帳列之現金及約當現金" in cnt:  # 實際上財報上有資料但資料庫中卻是null，代表該處確實缺失資料
                         if ss == '' or s < ss:
                             ss = s
                         break
-            if ss == '':
+            if ss == '':  # 無缺失資料
                 ss = cur.execute('select 時間 from "現金流量表/期末現金及約當現金餘額/資產負債表帳列之現金及約當現金" order by rowid desc').fetchone()[0]
                 sy, ss = map(int, ss.split('/Q'))
                 ss += 1
@@ -316,9 +336,11 @@ def cleasing_financial_statements():
                     if len(nv) == 0:
                         continue
                     for s in nv:
+                        if s < f'{sy}/Q{ss}':  # 更早之前的資料都是完整的，不用找了
+                            break
                         with open(f'raw data/financial statements/{c}/{s.replace('/Q', ' ')}.html', 'r', encoding = 'cp950', errors = 'replace') as f:
                             cnt = f.read()
-                        if "資產負債表帳列之現金及約當現金" in cnt:
+                        if "資產負債表帳列之現金及約當現金" in cnt:  # 實際上財報上有資料但資料庫中卻是null，代表該處確實缺失資料
                             skip2code = c
                             break
         else:
@@ -326,6 +348,9 @@ def cleasing_financial_statements():
     else:
         sy, ss = map(int, '2013/Q1'.split('/Q'))
 
+    # 處理資料的原則：
+    # 表格的數字都是代表單一季的資料。當沒有財報時，表格的該季資料就是None。如果無法取得單季資料但有多季加總的資料，會盡量減少資料涵蓋的季節數並將資料與時間範圍儲存為json字串到表格中
+    # json字串的格式： [數字, '開始季~結束季']
     print('inserting data into database')
     for c in stock_code:
         if skip2code != '' and c < skip2code:
@@ -358,7 +383,7 @@ def cleasing_financial_statements():
                             dt[ky] = its[i][j][1]
                             n = its[i][j][1]
                             for sbit in sols[0]:
-                                if ky in dts[sbit]:  # 如果前幾季的財報資料沒有該項目，就以0為計算
+                                if ky in dts[sbit]:  # 如果前幾季的財報資料沒有該項目，就以0為計算，也就是直接跳過不減
                                     n -= dts[sbit][ky]
                             if sols[1][0] != sols[1][1]:
                                 n = json.dumps([n, '~'.join(map(str, sols[1]))])  # 無法縮小到單季的範圍，需要特別標記涵蓋的時間範圍
@@ -383,6 +408,13 @@ def cleasing_financial_statements():
 
 
 """
+TODO financial statement的bug可能有很多，盡量加一些自動判斷的條件與assertion！
+
+# PROBLEM 目前的資料抓取範圍可能有選擇性偏誤，導致實際上策略會選到將來會下市的股票但我回測資料中卻沒這些股票，高估策略的績效
+# -> 哪裡能找出所有過去的股票代號？
+# REPORT finlab資料有誤：1341缺少了2018/Q3的資料導致現金流量表數字錯誤，1613的2016/Q3資料誤植到2017/Q3(資產負債表帳列之現金及約當現金)
+
+---
 
 import os, pandas as pd
 from datetime import datetime
@@ -394,204 +426,11 @@ for sk in stock_code:
                 continue
             with open(f'raw data/financial statements/{sk}/{y} {s}.html', 'r', encoding = 'cp950', errors = 'replace') as f:
                 cnt = f.read()
-            if not ('會計師查核' in cnt or '查無資料' in cnt or '檔 案不存在' in cnt):
+            if not ('會計師查核' in cnt or '查無資料' in cnt or '檔案不存在' in cnt):
                 print(f'raw data/financial statements/{sk}/{y} {s}.html')
 4554/2016 2
 4804/2014 4 ~ 2018 4
 6693/2018 2
-
----
-
-# PROBLEM 目前的資料抓取範圍可能有選擇性偏誤，導致實際上策略會選到將來會下市的股票但我回測資料中卻沒這些股票，高估策略的績效
-# -> 哪裡能找出所有過去的股票代號？
-# REPORT finlab資料有誤：1341缺少了2018/Q3的資料導致現金流量表數字錯誤，1613的2016/Q3資料誤植到2017/Q3(資產負債表帳列之現金及約當現金)
-
-# finlab如何處理財報有缺漏，且公開的財報資料是多季總和的情況？
-# A: 沒財報的會保留None，但若有總和的會盡量找當年度前季的資料計算出當季的資料。多個None後出現的數字代表這些空缺部份數字與當季資料的總和
-# TODO 紀錄這些資料處理的準則，如org前的註解一樣
-# 沒資料就寫None，預設數字都是單一季的資料，如果範圍包含多季則會以list轉json文字儲存，list儲存數字與時間範圍
-#
-# BUG 綜合損益表與現金流量表的資料需要校正
-# 先觀察同一年度的財報項目是否會盡量保持相同？
-# A: 不會，財報會無緣無故多出奇怪的項目
-
-import re, os, json, sqlite3, warnings, pandas as pd
-from datetime import datetime
-from bs4 import BeautifulSoup
-def rp(a):
-    return a.replace('合計', '').replace('淨額', '').replace('總計', '').replace('總額', '').replace('淨現金流入（流出）', '現金流量').replace('\u3000', '')
-
-def nb(a):
-    if a == '':
-        return 'NaN'
-    return (float(re.sub('[,\\(\\)]', '', a)) if '.' in a else int(re.sub('[,\\(\\)]', '', a))) * (1 - 2 * int('(' in a))
-
-def pru(its):  # 簡化報表的項目
-    i = 0
-    def sk(f = None):  # 父節點在its中的index
-        nonlocal i
-        rt = []  # 本層與以下層應該回傳的結果
-        n = None  # 父節點的數值
-        p = i  # 本層中名稱與父節點相對應的its中的index
-        c = 0 if f is None else its[f][0].count('\u3000') + 1  # 本層項目的前綴應有多少個\u3000
-        while i < len(its) and its[i][0].count('\u3000') >= c:
-            assert its[i][0].count('\u3000') <= i and (i == 0 or its[i][0].count('\u3000') <= its[i - 1][0].count('\u3000') + 1), 'wrong indentation'
-            if its[i][0].count('\u3000') > c:
-                rt += [[it[0], nb(it[1])] for it in its[p:i]]
-                sb, sn = sk(i - 1)
-                if sn is not None:  # 指定從下層得知的父節點的數值
-                    rt[-1][1] = sn
-                rt += sb
-                p = i
-            elif f is not None and rp(its[i][0]) == rp(its[f][0]):
-                rt += [[it[0], nb(it[1])] for it in its[p:i]]
-                p = i
-                n = nb(its[i][1])
-                i += 1
-            else:
-                i += 1
-        if not (p == i - 1 and f is not None and rp(its[p][0]) == rp(its[f][0])):
-            rt += [[it[0], nb(it[1])] for it in its[p:i]]
-        if len(rt) == 1 and f is not None and rp(rt[0][0]) == rp(its[f][0]):
-            rt = []
-        return rt, n
-    return sk()[0]
-
-def ctt(t):  # 簡化財報上的時間範圍
-    if '上半年度' in t:
-        return [1, 2]
-    elif '年度' in t:
-        return [1, 4]
-    rt = re.search(r'(?<=第)\d(?=季)', t)
-    if rt is not None:
-        n = int(rt.group())
-        return [n, n]
-    rt = list(map(lambda x: (int(x) + 2) // 3, re.findall(r'\d+(?=月)', t)))
-    if len(rt) == 1:
-        rt = rt * 2
-    return rt
-
-def org(fn):
-    if not os.path.exists(fn):
-        return [[], [], []], None
-    with open(fn, 'r', encoding = 'cp950', errors = 'replace') as f:
-        cnt = f.read()
-    if '查無資料' in cnt or '檔案不存在' in cnt:
-        return [[], [], []], None
-    elif '會計師查核' not in cnt:
-        warnings.warn(f'File {fn} is not complete. Please download it again.')
-        return [[], [], []], None
-    cnt = cnt.replace('當期所得稅負債', '本期所得稅負債')\
-        .replace('\u3000待註銷股本股數', '待註銷股本股數')\
-        .replace('\u3000預收股款（權益項下）之約當發行股數', '預收股款（權益項下）之約當發行股數')\
-        .replace('\u3000母公司暨子公司所持有之母公司庫藏股股數（單位：股）', '母公司暨子公司所持有之母公司庫藏股股數（單位：股）')\
-        .replace('採用權益法之關聯企業及合資損益之份額', '採用權益法認列之關聯企業及合資損益之份額')\
-        .replace('不影響現金流量之收益費損項目', '收益費損項目')\
-        .replace('與營業活動相關之資產／負債變動數', '與營業活動相關之資產及負債之淨變動')
-    cnt = re.sub('(?<!／)呆帳費用提列（轉列收入）數', '預期信用減損損失（利益）數／呆帳費用提列（轉列收入）數', cnt)
-    cnt = re.sub(r'\((?=[\u4e00-\u9fff])', '（', cnt)
-    cnt = re.sub(r'(?<=[\u4e00-\u9fff])\)', '）', cnt)
-    cnt = re.sub(r'(?<=[\u4e00-\u9fff])-(?=[\u4e00-\u9fff])', '－', cnt)
-
-    year = fn.split('/')[-1].split()[0]
-    if int(year) >= 2019:
-        tbs = BeautifulSoup(cnt, 'html.parser').select('table')[:3]
-        for tb in tbs:
-            for en in tb.select('.en'):
-                en.decompose()
-        timespan = [ctt(tb.select('tr')[1].select('th')[2].get_text()) for tb in tbs]
-        lt = [[[td.get_text().replace(' ', '') for td in tr.select('td')[1:3]] for tr in tb.select('tr')[2:]] for tb in tbs]
-    else:
-        tbs = BeautifulSoup(cnt, 'html.parser').select('table')[1:4]
-        timespan = [ctt(tb.select('tr')[0].select('th')[1].get_text()) for tb in tbs]
-        lt = [[[td.get_text()[1:].replace(' ', '') for td in tr.select('td')[:2]] for tr in tb.select('tr') if tr.select('td')[:2] != []] for tb in tbs]
-    s = list(map(lambda x: x.replace('\u3000', ''), list(zip(*lt[0]))[0]))
-    if '負債及權益' not in s:
-        lt[0] = lt[0][:s.index('負債')] + [['負債及權益', '']] + \
-            [['\u3000' + it[0], it[1]] for it in lt[0][s.index('負債'):s.index('權益總額') + 1]] + \
-            [['\u3000負債及權益總計', lt[0][s.index('資產總額')][1]]] + lt[0][s.index('權益總額') + 1:]
-    s = list(map(lambda x: x.replace('\u3000', ''), list(zip(*lt[1]))[0]))
-    if '淨利（損）歸屬於：' in s:
-        lt[1] = lt[1][:s.index('淨利（損）歸屬於：')] + \
-            [['淨利（損）歸屬於：' + it[0].replace('\u3000', ''), it[1]] for it in lt[1][s.index('淨利（損）歸屬於：') + 1:s.index('綜合損益總額歸屬於：')]] + \
-            [['綜合損益總額歸屬於：' + it[0].replace('\u3000', ''), it[1]] for it in lt[1][s.index('綜合損益總額歸屬於：') + 1:s.index('基本每股盈餘')]] + \
-            lt[1][s.index('基本每股盈餘'):]
-    if '營業毛利（毛損）' in s:  # 1409/2024 3.html沒有此項
-        for i in range(s.index('營業毛利（毛損）'), s.index('營業毛利（毛損）淨額') + 1):
-            lt[1][i][0] = '\u3000' + lt[1][i][0]
-        lt[1] = lt[1][:s.index('營業毛利（毛損）')] + [['營業毛利（毛損）', '']] + lt[1][s.index('營業毛利（毛損）'):]
-    s = list(map(lambda x: x.replace('\u3000', ''), list(zip(*lt[2]))[0]))
-    if '營業活動之現金流量－直接法' in s:
-        lt[2][s.index('營業活動之淨現金流入（流出）')][0] = '\u3000營業活動之淨現金流入（流出）－直接法'
-        lt[2] = lt[2][:s.index('營業活動之現金流量－直接法')] + [['\u3000營業活動之淨現金流入（流出）－間接法', lt[2][s.index('營業活動之淨現金流入（流出）')][1]]] + \
-            lt[2][s.index('營業活動之現金流量－直接法'):]
-    else:
-        lt[2][s.index('營業活動之淨現金流入（流出）')][0] = '\u3000營業活動之淨現金流入（流出）－間接法'
-    return list(map(pru, lt)), timespan
-
-sy, ss = 2013, 1
-ey, es = datetime.now().year, datetime.today().strftime('%m/%d')
-if es < '03/31':
-    ey, es = ey - 1, 3
-elif es < '05/15':
-    ey, es = ey - 1, 4
-elif es < '08/14':
-    es = 1
-elif es < '11/14':
-    es = 2
-else:
-    es = 3
-
-db = sqlite3.connect('test.db')
-cur = db.cursor()
-stock_code = pd.read_csv('raw data/stock basic.csv', dtype = {'代號': str})['代號'].to_list()
-c, y = '1587', 2019
-dts, tsns = [], []
-for s in range([1, ss][y == sy], [5, es + 1][y == ey]):
-    its, tsn = org(f'raw data/financial statements/{c}/{y} {s}.html')
-    sk, dt = [], {}
-    if tsn is not None:
-        for i in range(3):
-            sols = [([], tsn[i][:])]
-            for ts in range(tsn[i][0] - 1, tsn[i][1] - 1):
-                if tsns[ts] is None:
-                    continue
-                for sol in sols:
-                    tas, rem = sol
-                    if rem[0] == tsns[ts][i][0]:
-                        ntas = tas[:]
-                        ntas.append(ts)
-                        sols.append((ntas, [tsns[ts][i][1] + 1, rem[1]]))
-            sols = sols[-1]
-
-            for j in range(len(its[i])):
-                while len(sk) > its[i][j][0].count('\u3000'):
-                    sk.pop()
-                if len(sk) < its[i][j][0].count('\u3000'):
-                    sk.append(its[i][j - 1][0].lstrip('\u3000'))
-                ky = '/'.join([['資產負債表', '綜合損益表', '現金流量表'][i]] + sk + [its[i][j][0].lstrip('\u3000')])
-                dt[ky] = its[i][j][1]
-                n = its[i][j][1]
-                for sbit in sols[0]:
-                    if ky in dts[sbit]:
-                        n -= dts[sbit][ky]
-                if sols[1][0] != sols[1][1]:
-                    n = json.dumps([n, '~'.join(map(str, sols[1]))])
-
-                if cur.execute('select name from sqlite_master where type = "table" and name = "' + ky + '"').fetchone() is None:
-                    cur.execute('create table "' + ky + '"(時間, "' + '", "'.join(stock_code) + '")')
-                    cur.executemany('insert into "' + ky + '"(時間) values(?)', [[f'{ty}/Q{ts}'] for ty in range(2013, ey + 1) for ts in range(1, [5, es + 1][ty == ey])])
-                else:
-                    tsy, tss = map(int, cur.execute('select 時間 from "' + ky + '" order by rowid desc').fetchone()[0].split('/Q'))
-                    if f'{tsy}/Q{tss}' < f'{ey}/Q{es}':
-                        tss += 1
-                        if tss == 5:
-                            tsy += 1
-                            tss = 1
-                        cur.executemany('insert into "' + ky + '"(時間) values(?)', [[f'{ty}/Q{ts}'] for ty in range(tsy, ey + 1) for ts in range([1, tss][ty == tsy], [5, es + 1][ty == ey])])
-                cur.execute('update "' + ky + '" set "' + c + '" = ? where 時間 = ?', [n, f'{y}/Q{s}'])
-    dts.append(dt)
-    tsns.append(tsn)
 
 ---
 
@@ -608,59 +447,6 @@ for its in td:
     print('---')
 
 ---
-
-def mrg(its, te = None, fg = 0):  # 整合多個財報成同一棵樹
-    if te is None:
-        te = {'c': 0}
-    sk = []
-    for i in range(len(its)):
-        while len(sk) > its[i][0].count('\u3000'):
-            sk.pop()
-        if len(sk) < its[i][0].count('\u3000'):
-            sk.append(its[i - 1][0].lstrip('\u3000'))
-        p = te
-        for k in sk:
-            p = p[k]
-        n = its[i][0].lstrip('\u3000')
-        if n in p:
-            p[n]['v'] += ['NaN'] * (te['c'] - len(p[n]['v'])) + [its[i][1]]
-        else:
-            print(f'create {'/'.join([['資產負債表', '綜合損益表', '現金流量表'][fg]] + sk + [n])}')
-            p[n] = {'v': ['NaN'] * te['c'] + [its[i][1]]}
-    te['c'] += 1
-    return te
-
-def impute(te , c = None):
-    if c is None:
-        c = te['c']
-    if 'v' in te:
-        if len(te['v']) < c:
-            te['v'] += ['NaN'] * (c - len(te['v']))
-        return
-    for k in te:
-        if k != 'c' and k != 'v':
-            impute(te[k], c)
-
-def ptt(te, s = 0):
-    for k in te:
-        if k == 'v' or k == 'c':
-            continue
-        print(('  ' * s) + k + ': ' + str(te[k]['v']))
-        if len(te[k]) > 1:
-            ptt(te[k], s + 1)
-
----
-
-def stpt(l, s = 1):
-    if not True in map(lambda x: isinstance(x, list), l):
-        print(l, end = '')
-        return
-    print('[', end = '')
-    for i, il in enumerate(l):
-        stpt(il, s + 1)
-        if i != len(l) - 1:
-            print(',\n' + (' ' * s), end = '')
-    print([']', ']\n'][s == 1], end = '')
 
 pd.set_option('display.max_columns', None)
 
