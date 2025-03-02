@@ -4,6 +4,7 @@ import json
 import sqlite3
 import pandas as pd
 import warnings
+import inspect
 from datetime import datetime
 from bs4 import BeautifulSoup
 
@@ -98,6 +99,7 @@ def cleasing_financial_statements():
         return (float(re.sub('[,\\(\\)]', '', a)) if '.' in a else int(re.sub('[,\\(\\)]', '', a))) * (1 - 2 * int('(' in a))
     def pru(its):  # 簡化報表的項目
         i = 0
+        fn = inspect.stack()[1].frame.f_locals['fn']
         def sk(f = None):  # 父節點在its中的index
             nonlocal i
             rt = []  # 本層與以下層應該回傳的結果
@@ -121,14 +123,15 @@ def cleasing_financial_statements():
                 else:
                     i += 1
             if not (p == i - 1 and f is not None and rp(its[p][0]) == rp(its[f][0])):
+                if p < i - 1:
+                    warnings.warn(f'There may be some wrong indentation. Please contact the developer to  double check for {fn}')
                 rt += [[it[0], nb(it[1])] for it in its[p:i]]
             if len(rt) == 1 and f is not None and rp(rt[0][0]) == rp(its[f][0]):
                 rt = []
             return rt, n
         rt = sk()[0]
         for it in rt:
-            if it[1] == 'NaN':
-                raise Exception('Empty value')
+            assert it[1] != 'NaN', f'Empty value occur! Please contact the developer to fix this bug! Happend when processing {fn}'
         return rt
     def ctt(t):  # 簡化財報上的時間範圍
         if '上半年度' in t:
@@ -225,12 +228,7 @@ def cleasing_financial_statements():
                 lt[2][s.index('營業活動之現金流量－直接法'):]
         else:
             lt[2][s.index('營業活動之淨現金流入（流出）')][0] = '\u3000營業活動之淨現金流入（流出）－間接法'
-        try:
-            rt = list(map(pru, lt))
-        except Exception:
-            print(fn)
-            exit()
-        return rt, timespan
+        return list(map(pru, lt)), timespan
 
     db = sqlite3.connect('data.db')
     cur = db.cursor()
@@ -408,7 +406,6 @@ def cleasing_financial_statements():
 
 
 """
-TODO financial statement的bug可能有很多，盡量加一些自動判斷的條件與assertion！
 
 # PROBLEM 目前的資料抓取範圍可能有選擇性偏誤，導致實際上策略會選到將來會下市的股票但我回測資料中卻沒這些股票，高估策略的績效
 # -> 哪裡能找出所有過去的股票代號？
